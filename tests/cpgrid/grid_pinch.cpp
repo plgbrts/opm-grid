@@ -160,6 +160,100 @@ BOOST_AUTO_TEST_CASE(PinchZeroVolumeNoBarrier)
 }
 
 
+// Regression test for PR-001 (fix/pinch-nnc-inactive-target).
+//
+// Root cause: buildFaceToCell had no guard before passing
+// global_to_local[it->second] to EntityRep::setValue.  In production (the
+// Groningen field case), a PinchNNC target cell that was active in ACTNUM
+// and had pv > MINPV was nonetheless absent from output.local_cell_index
+// because the non-vertical COORD pillar geometry caused finduniquepoints
+// (in preprocess.c) to treat it as geometrically collapsed *after* ZCORN
+// modifications from MinpvProcessor.  Reproducing that exact pillar geometry
+// synthetically is not feasible; this test instead exercises the complete
+// PinchNNC → buildFaceToCell code path with multiple cascaded NNCs, verifying
+// that no assertion fires and the resulting topology is self-consistent.
+//
+// If the guard introduced by PR-001 is reverted, the Groningen field case
+// will crash with:
+//   Assertion `index_arg >= 0' failed  in EntityRep<0>::setValue
+BOOST_AUTO_TEST_CASE(PinchNNCCascadeStability)
+{
+    BOOST_TEST_MESSAGE("Regression test for PR-001: PinchNNC guard in "
+                       "buildFaceToCell. Tests multi-layer PINCH cascade "
+                       "exercises the NNC path without assertion failure.");
+
+    // 1x1x7 grid.
+    // k=0        z=0  ..1.0  normal, thick
+    // k=1        z=1  ..1.0  zero thickness → thin-inactive, bypassed by MinpvProcessor
+    // k=2        z=1  ..1.0  zero thickness → thin-inactive, bypassed
+    // k=3        z=1  ..2.0  normal, thick  → NNC target for k=0 bridge
+    // k=4        z=2  ..2.0  zero thickness → thin-inactive, bypassed
+    // k=5        z=2  ..2.0  zero thickness → thin-inactive, bypassed
+    // k=6        z=2  ..3.0  normal, thick  → NNC target for k=3 bridge
+    //
+    // Expected: 3 active cells (k=0,3,6), 2 PinchNNCs generated,
+    // every active cell has at least one neighbor.
+    const std::string deckString =
+        R"(RUNSPEC
+        DIMENS
+        1  1  7 /
+        GRID
+        COORD
+        0 0 0  0 0 3
+        1 0 0  1 0 3
+        0 1 0  0 1 3
+        1 1 0  1 1 3
+        /
+        ZCORN
+        4*0.0
+        8*1.0
+        8*1.0
+        8*1.0
+        8*2.0
+        8*2.0
+        8*2.0
+        4*3.0
+        /
+        PINCH
+        0.01   NOGAP   1*   1*
+        /
+        )";
+
+    Opm::Parser parser;
+    const auto deck = parser.parseString(deckString);
+
+    Dune::CpGrid grid;
+    Opm::EclipseGrid ecl_grid(deck);
+
+    // Must complete without assertion failure (the pre-PR-001 code would
+    // abort with assert(index_arg >= 0) in EntityRep::setValue if any
+    // PinchNNC target cell is absent from the processed active-cell set).
+    BOOST_REQUIRE_NO_THROW(
+        grid.processEclipseFormat(&ecl_grid, nullptr, false, false, false));
+
+    if (Fixture::rank() == 0)
+    {
+        // Three non-collapsed layers must survive.
+        BOOST_CHECK_EQUAL(grid.size(0), 3);
+
+        // Every active cell must have at least one face-neighbor
+        // (the PINCH NNCs bridge the two collapsed layers in each gap).
+        const auto& gridView = grid.leafGridView();
+        for (const auto& element : elements(gridView))
+        {
+            std::size_t neighbors = 0;
+            for (auto it  = gridView.ibegin(element),
+                      end = gridView.iend(element); it != end; ++it)
+            {
+                neighbors += it.neighbor();
+            }
+            BOOST_CHECK_MESSAGE(neighbors > 0,
+                "Active cell has no neighbors — PinchNNC bridge missing.");
+        }
+    }
+}
+
+
 BOOST_AUTO_TEST_CASE(NoPinchZeroVolumeBarrier)
 {
     BOOST_TEST_MESSAGE("Testing that cells with zero volume present barriers"
