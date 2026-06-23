@@ -532,6 +532,39 @@ namespace cpgrid
         }
 #endif
 
+        // Filter PinchNNC entries whose source or target is not active in the
+        // processed grid.  This is the architecturally correct place to perform
+        // the check: process_grdecl has finalised the active-cell set, so any
+        // PinchNNC endpoint absent from output.local_cell_index is definitively
+        // inactive.  The guard in buildFaceToCell (PR-001) remains as a safety
+        // net for the bounds-check case.
+        if (!nnc[PinchNNC].empty()) {
+            const int cart_size = input_data.dims[0]
+                                * input_data.dims[1]
+                                * input_data.dims[2];
+            std::vector<bool> is_active(cart_size, false);
+            for (int i = 0; i < output.number_of_cells; ++i) {
+                is_active[output.local_cell_index[i]] = true;
+            }
+
+            auto& pinch_nncs = nnc[PinchNNC];
+            for (auto it = pinch_nncs.begin(); it != pinch_nncs.end(); ) {
+                const bool src_ok = (it->first  >= 0 && it->first  < cart_size
+                                     && is_active[it->first]);
+                const bool tgt_ok = (it->second >= 0 && it->second < cart_size
+                                     && is_active[it->second]);
+                if (!src_ok || !tgt_ok) {
+                    Opm::OpmLog::warning("pinch_nnc_filtered",
+                        "PinchNNC (" + std::to_string(it->first)
+                        + " -> " + std::to_string(it->second)
+                        + ") removed: endpoint not active in processed grid.");
+                    it = pinch_nncs.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
         // Move data into the grid's structures.
 #ifdef VERBOSE
         std::cout << "Building topology." << std::endl;

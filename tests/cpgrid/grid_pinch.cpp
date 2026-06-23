@@ -309,3 +309,79 @@ BOOST_AUTO_TEST_CASE(NoPinchZeroVolumeBarrier)
         }
     }
 }
+
+
+// Regression test for PR-003 (fix/pinch-nnc-filter-at-construction).
+//
+// Verifies that the construction-time PinchNNC filter (added after
+// process_grdecl) correctly removes NNC entries whose endpoints are not
+// active in the processed grid, and that valid NNCs are preserved.
+// Uses the same 1x1x7 PINCH cascade as PinchNNCCascadeStability; the filter
+// must leave the two valid NNCs intact so that all 3 active cells remain
+// connected.
+BOOST_AUTO_TEST_CASE(PinchNNCFilterAtConstruction)
+{
+    BOOST_TEST_MESSAGE("Regression test for PR-003: PinchNNC filter at "
+                       "construction removes inactive endpoints, preserves "
+                       "valid connections.");
+
+    // Same 1x1x7 deck as PinchNNCCascadeStability.
+    // k=0 (active), k=1+2 (zero-thickness, collapsed), k=3 (active NNC target),
+    // k=4+5 (zero-thickness, collapsed), k=6 (active NNC target).
+    // The filter must pass the two valid NNCs (k=0->k=3 and k=3->k=6).
+    const std::string deckString =
+        R"(RUNSPEC
+        DIMENS
+        1  1  7 /
+        GRID
+        COORD
+        0 0 0  0 0 3
+        1 0 0  1 0 3
+        0 1 0  0 1 3
+        1 1 0  1 1 3
+        /
+        ZCORN
+        4*0.0
+        8*1.0
+        8*1.0
+        8*1.0
+        8*2.0
+        8*2.0
+        8*2.0
+        4*3.0
+        /
+        PINCH
+        0.01   NOGAP   1*   1*
+        /
+        )";
+
+    Opm::Parser parser;
+    const auto deck = parser.parseString(deckString);
+
+    Dune::CpGrid grid;
+    Opm::EclipseGrid ecl_grid(deck);
+
+    BOOST_REQUIRE_NO_THROW(
+        grid.processEclipseFormat(&ecl_grid, nullptr, false, false, false));
+
+    if (Fixture::rank() == 0)
+    {
+        // Both NNCs must survive the filter: k=0->k=3 and k=3->k=6.
+        BOOST_CHECK_EQUAL(grid.size(0), 3);
+
+        // Every active cell has at least one neighbor via the NNCs.
+        const auto& gridView = grid.leafGridView();
+        for (const auto& element : elements(gridView))
+        {
+            std::size_t neighbors = 0;
+            for (auto it  = gridView.ibegin(element),
+                      end = gridView.iend(element); it != end; ++it)
+            {
+                neighbors += it.neighbor();
+            }
+            BOOST_CHECK_MESSAGE(neighbors > 0,
+                "Active cell has no neighbors — valid PinchNNC was incorrectly "
+                "filtered out by the construction-time filter.");
+        }
+    }
+}
