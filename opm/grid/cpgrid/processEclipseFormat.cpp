@@ -1132,15 +1132,29 @@ namespace cpgrid
                         {
                             auto it = nnc[PinchNNC].lower_bound({global_cell[fnc[0]], 0});
                             if (it != nnc[PinchNNC].end() && it->first == global_cell[fnc[0]]) {
-                                const int other_cell = global_to_local[it->second];
-                                cells[cellcount].setValue(other_cell, false);
-                                ++cellcount;
-                                // Now we must ensure that the face connecting
-                                // the second cell to the boundary is skipped,
-                                // it is considered replaced by the connection
-                                // added here.
-                                // Note: not done anymore, see comment below.
-                                // next_skip_zmin_face = other_cell;
+                                if (it->second >= static_cast<int>(global_to_local.size())) {
+                                    Opm::OpmLog::warning("pinch_nnc_oobounds",
+                                        "PinchNNC target global index "
+                                        + std::to_string(it->second)
+                                        + " exceeds grid size; skipping NNC.");
+                                } else {
+                                    const int other_cell = global_to_local[it->second];
+                                    if (other_cell < 0) {
+                                        Opm::OpmLog::warning("pinch_nnc_inactive",
+                                            "PinchNNC target cell (global index "
+                                            + std::to_string(it->second)
+                                            + ") is not active in processed grid; skipping NNC.");
+                                    } else {
+                                        cells[cellcount].setValue(other_cell, false);
+                                        ++cellcount;
+                                        // Now we must ensure that the face connecting
+                                        // the second cell to the boundary is skipped,
+                                        // it is considered replaced by the connection
+                                        // added here.
+                                        // Note: not done anymore, see comment below.
+                                        // next_skip_zmin_face = other_cell;
+                                    }
+                                }
                             }
                         }
                     } else if (fnc[0] == -1) {
